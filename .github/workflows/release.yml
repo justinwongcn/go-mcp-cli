@@ -109,17 +109,40 @@ jobs:
           echo "文件类型检查:"
           file * || true
           
-          # 为所有二进制文件添加执行权限
-          chmod +x mcp-cli-* 2>/dev/null || true
+          # 为所有二进制文件添加执行权限（关键步骤）
+          echo "设置执行权限..."
+          for binary in mcp-cli-*; do
+            if [ -f "$binary" ]; then
+              chmod +x "$binary"
+              echo "已设置 $binary 的执行权限"
+              ls -lh "$binary"
+            fi
+          done
+
+          echo "创建压缩包以保留文件权限..."
+          for binary in mcp-cli-*; do
+            if [ -f "$binary" ]; then
+              # 创建 tar.gz 压缩包（保留权限，适用于 Linux/macOS）
+              tar -czf "${binary}.tar.gz" "$binary"
+              echo "已创建 ${binary}.tar.gz"
+              
+              # 创建 zip 压缩包（适用于 Windows）
+              zip "${binary}.zip" "$binary"
+              echo "已创建 ${binary}.zip"
+            fi
+          done
 
           echo "最终发布文件列表:"
           ls -lh
+          
+          echo "验证文件权限:"
+          stat -c '%A %n' mcp-cli-* 2>/dev/null || stat -f '%Sp %N' mcp-cli-* 2>/dev/null || true
 
       - name: 发布到 GitHub
         uses: softprops/action-gh-release@v1
         with:
           files: |
-            artifacts/**/*
+            artifacts/mcp-cli-*
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -154,7 +177,7 @@ jobs:
           echo "提取后的文件列表:"
           ls -lh
           
-          # 为所有二进制文件生成校验和
+          # 为所有发布文件生成校验和（包括二进制文件和压缩包）
           if ls mcp-cli-* 2>/dev/null; then
             echo "生成校验和..."
             shasum -a 256 mcp-cli-* > checksums.txt
@@ -166,7 +189,7 @@ jobs:
               echo "校验和文件为空"
             fi
           else
-            echo "没有找到任何二进制文件"
+            echo "没有找到任何发布文件"
             ls -la
           fi
 
