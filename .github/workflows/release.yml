@@ -1,0 +1,182 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: 构建 ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: 'windows-amd64'
+            artifact: 'mcp-cli-windows-amd64.exe'
+            goos: 'windows'
+            goarch: 'amd64'
+          - target: 'linux-amd64'
+            artifact: 'mcp-cli-linux-amd64'
+            goos: 'linux'
+            goarch: 'amd64'
+          - target: 'linux-arm64'
+            artifact: 'mcp-cli-linux-arm64'
+            goos: 'linux'
+            goarch: 'arm64'
+          - target: 'darwin-amd64'
+            artifact: 'mcp-cli-darwin-amd64'
+            goos: 'darwin'
+            goarch: 'amd64'
+          - target: 'darwin-arm64'
+            artifact: 'mcp-cli-darwin-arm64'
+            goos: 'darwin'
+            goarch: 'arm64'
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 设置 Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+          cache: true
+
+      - name: 下载依赖
+        run: |
+          go mod download
+          go mod verify
+
+      - name: 构建 ${{ matrix.target }}
+        run: |
+          echo "构建 ${{ matrix.target }}..."
+          GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} CGO_ENABLED=0 go build -v -trimpath -ldflags="-s -w" -o ${{ matrix.artifact }} ./cmd/mcp-cli
+          
+          echo "构建完成，检查文件信息:"
+          ls -lh ${{ matrix.artifact }}
+          file ${{ matrix.artifact }}
+          
+          # 确保有执行权限
+          chmod +x ${{ matrix.artifact }}
+
+      - name: 上传构件
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.artifact }}
+          compression-level: 9
+
+  create-release:
+    name: 创建发布版本
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 下载所有构件
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: 准备发布文件
+        run: |
+          echo "当前目录结构:"
+          ls -R artifacts/
+          
+          echo "检查并提取嵌套的二进制文件..."
+          cd artifacts
+          
+          # 处理可能嵌套在子目录中的文件
+          for dir in */; do
+            if [ -d "$dir" ]; then
+              echo "发现目录: $dir"
+              # 将子目录中的文件移到当前目录
+              mv "$dir"* . 2>/dev/null || true
+              rmdir "$dir" 2>/dev/null || true
+            fi
+          done
+          
+          echo "提取后的文件列表:"
+          ls -lh
+          
+          echo "文件类型检查:"
+          file * || true
+          
+          # 为所有二进制文件添加执行权限
+          chmod +x mcp-cli-* 2>/dev/null || true
+
+          echo "最终发布文件列表:"
+          ls -lh
+
+      - name: 发布到 GitHub
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            artifacts/**/*
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  checksum:
+    name: 生成校验和
+    needs: create-release
+    runs-on: ubuntu-latest
+    steps:
+      - name: 下载所有构件
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: 生成 SHA256 校验和
+        run: |
+          echo "当前目录结构:"
+          ls -R artifacts/
+          
+          cd artifacts
+          
+          # 处理可能嵌套在子目录中的文件
+          for dir in */; do
+            if [ -d "$dir" ]; then
+              echo "发现目录: $dir"
+              mv "$dir"* . 2>/dev/null || true
+              rmdir "$dir" 2>/dev/null || true
+            fi
+          done
+          
+          echo "提取后的文件列表:"
+          ls -lh
+          
+          # 为所有二进制文件生成校验和
+          if ls mcp-cli-* 2>/dev/null; then
+            echo "生成校验和..."
+            shasum -a 256 mcp-cli-* > checksums.txt
+            
+            if [ -s "checksums.txt" ]; then
+              echo "校验和文件内容:"
+              cat checksums.txt
+            else
+              echo "校验和文件为空"
+            fi
+          else
+            echo "没有找到任何二进制文件"
+            ls -la
+          fi
+
+      - name: 上传校验和
+        run: |
+          if [ -f "artifacts/checksums.txt" ] && [ -s "artifacts/checksums.txt" ]; then
+            echo "上传校验和文件"
+            gh release upload ${{ github.ref_name }} artifacts/checksums.txt -R ${{ github.repository }}
+          else
+            echo "校验和文件不存在或为空，跳过上传"
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
