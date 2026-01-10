@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // Copyright 2025 MCP CLI Contributors
@@ -21,10 +22,24 @@ import (
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Config 总体配置结构
+// Config 总体配置结构（go-mcp-cli 格式）
 type Config struct {
 	Version string                   `json:"version"`
 	Servers map[string]*ServerConfig `json:"servers"`
+}
+
+// ClaudeDesktopConfig Claude Desktop JSON 配置格式
+type ClaudeDesktopConfig struct {
+	MCPServers map[string]*ClaudeServerConfig `json:"mcpServers"`
+}
+
+// ClaudeServerConfig Claude Desktop 服务器配置
+type ClaudeServerConfig struct {
+	Command string            `json:"command,omitempty"`
+	Args    []string          `json:"args,omitempty"`
+	Env     map[string]string `json:"env,omitempty"`
+	URL     string            `json:"url,omitempty"`
+	Headers map[string]string `json:"headers,omitempty"`
 }
 
 // ServerConfig 服务器配置
@@ -51,11 +66,11 @@ func NewConfigManager(configPath ...string) (*ConfigManager, error) {
 	if len(configPath) > 0 {
 		path = configPath[0]
 	} else {
-		homeDir, err := os.UserHomeDir()
+		cwd, err := os.Getwd()
 		if err != nil {
-			return nil, fmt.Errorf("failed to get home directory: %w", err)
+			return nil, fmt.Errorf("failed to get current directory: %w", err)
 		}
-		path = filepath.Join(homeDir, ".mcp-cli", "config.json")
+		path = filepath.Join(cwd, ".mcp-cli", "config.json")
 	}
 
 	// 确保配置目录存在
@@ -85,7 +100,82 @@ func (cm *ConfigManager) load() error {
 		return err
 	}
 
-	return json.Unmarshal(data, &cm.config)
+	// 尝试解析为 go-mcp-cli 格式
+	var config Config
+	if err := json.Unmarshal(data, &config); err == nil && config.Servers != nil {
+		cm.config = &config
+		return nil
+	}
+
+	// 尝试解析为 Claude Desktop 格式
+	var claudeConfig ClaudeDesktopConfig
+	if err := json.Unmarshal(data, &claudeConfig); err == nil && claudeConfig.MCPServers != nil {
+		// 转换为 go-mcp-cli 格式
+		cm.config = &Config{
+			Version: "1.0.0",
+			Servers: make(map[string]*ServerConfig),
+		}
+		for name, server := range claudeConfig.MCPServers {
+			cm.config.Servers[name] = convertClaudeServer(name, server)
+		}
+		return nil
+	}
+
+	return fmt.Errorf("unsupported config format")
+}
+
+// LoadClaudeDesktopConfig 从 Claude Desktop 配置文件加载
+func LoadClaudeDesktopConfig(configPath string) (*Config, error) {
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		return nil, err
+	}
+
+	var claudeConfig ClaudeDesktopConfig
+	if err := json.Unmarshal(data, &claudeConfig); err != nil {
+		return nil, fmt.Errorf("failed to parse Claude Desktop config: %w", err)
+	}
+
+	config := &Config{
+		Version: "1.0.0",
+		Servers: make(map[string]*ServerConfig),
+	}
+	for name, server := range claudeConfig.MCPServers {
+		config.Servers[name] = convertClaudeServer(name, server)
+	}
+
+	return config, nil
+}
+
+// convertClaudeServer 将 Claude Desktop 配置转换为 go-mcp-cli 格式
+func convertClaudeServer(name string, server *ClaudeServerConfig) *ServerConfig {
+	config := &ServerConfig{
+		Name:    name,
+		Command: server.Command,
+		Args:    server.Args,
+		Env:     server.Env,
+		Headers: server.Headers,
+		URL:     server.URL,
+	}
+
+	// 自动检测传输类型
+	if server.Command != "" {
+		config.Transport = "stdio"
+	} else if server.URL != "" {
+		config.Transport = detectTransportType(server.URL)
+	}
+
+	return config
+}
+
+// detectTransportType 根据 URL 自动检测传输类型
+func detectTransportType(url string) string {
+	// 如果 URL 明确包含 /sse，使用 SSE
+	if strings.Contains(url, "/sse") {
+		return "sse"
+	}
+	// 默认使用 HTTP (streamable)
+	return "http"
 }
 
 // save 保存配置文件

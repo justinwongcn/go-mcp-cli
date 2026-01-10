@@ -40,16 +40,18 @@ type StdioConfig struct {
 
 // SSEConfig SSE 传输配置
 type SSEConfig struct {
-	Endpoint   string       // SSE 端点 URL
-	HTTPClient *http.Client // HTTP 客户端（可选）
+	Endpoint   string            // SSE 端点 URL
+	HTTPClient *http.Client      // HTTP 客户端（可选）
+	Headers    map[string]string // 自定义请求头
 }
 
 // HTTPConfig HTTP 传输配置
 type HTTPConfig struct {
-	Endpoint   string       // HTTP 端点 URL
-	HTTPClient *http.Client // HTTP 客户端（可选）
-	MaxRetries int          // 最大重试次数
-	Logger     interface{}  // 日志记录器（可选）
+	Endpoint   string            // HTTP 端点 URL
+	HTTPClient *http.Client      // HTTP 客户端（可选）
+	MaxRetries int               // 最大重试次数
+	Logger     interface{}       // 日志记录器（可选）
+	Headers    map[string]string // 自定义请求头
 }
 
 // NewClient 创建新的 MCP 客户端
@@ -95,9 +97,15 @@ func (c *MCPClient) ConnectSSE(ctx context.Context, config *SSEConfig) error {
 	transport := &mcp.SSEClientTransport{
 		Endpoint: config.Endpoint,
 	}
+	var httpClient *http.Client
 	if config.HTTPClient != nil {
-		transport.HTTPClient = config.HTTPClient
+		httpClient = config.HTTPClient
+	} else if len(config.Headers) > 0 {
+		httpClient = createHTTPClientWithHeaders(config.Headers)
+	} else {
+		httpClient = &http.Client{}
 	}
+	transport.HTTPClient = httpClient
 	session, err := c.client.Connect(ctx, transport, nil)
 	if err != nil {
 		return fmt.Errorf("failed to connect: %w", err)
@@ -116,9 +124,15 @@ func (c *MCPClient) ConnectHTTP(ctx context.Context, config *HTTPConfig) error {
 		Endpoint:   config.Endpoint,
 		MaxRetries: config.MaxRetries,
 	}
+	var httpClient *http.Client
 	if config.HTTPClient != nil {
-		transport.HTTPClient = config.HTTPClient
+		httpClient = config.HTTPClient
+	} else if len(config.Headers) > 0 {
+		httpClient = createHTTPClientWithHeaders(config.Headers)
+	} else {
+		httpClient = &http.Client{}
 	}
+	transport.HTTPClient = httpClient
 	session, err := c.client.Connect(ctx, transport, nil)
 	if err != nil {
 		return fmt.Errorf("failed to connect: %w", err)
@@ -126,6 +140,25 @@ func (c *MCPClient) ConnectHTTP(ctx context.Context, config *HTTPConfig) error {
 
 	c.session = session
 	return nil
+}
+
+// createHTTPClientWithHeaders 创建一个带有自定义请求头的 HTTP 客户端
+func createHTTPClientWithHeaders(headers map[string]string) *http.Client {
+	return &http.Client{
+		Transport: &headerTransport{headers: headers},
+	}
+}
+
+// headerTransport 自定义 HTTP 传输，用于添加请求头
+type headerTransport struct {
+	headers map[string]string
+}
+
+func (t *headerTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	for k, v := range t.headers {
+		req.Header.Set(k, v)
+	}
+	return http.DefaultTransport.RoundTrip(req)
 }
 
 // ListTools 列出所有可用工具

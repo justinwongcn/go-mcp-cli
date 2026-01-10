@@ -177,6 +177,51 @@ var removeCmd = &cobra.Command{
 
 func init() {
 	rootCmd.AddCommand(removeCmd)
+	rootCmd.AddCommand(importCmd)
+}
+
+var importCmd = &cobra.Command{
+	Use:   "import <config-file>",
+	Short: "Import servers from a Claude Desktop configuration file",
+	Long: `Import MCP servers from a Claude Desktop JSON configuration file.
+Supports both Claude Desktop format (mcpServers) and go-mcp-cli format (servers).
+
+Examples:
+  # Import from Claude Desktop config
+  mcp-cli import ~/.config/claude/claude_desktop_config.json
+
+  # Import from specific file
+  mcp-cli import /path/to/config.json`,
+	Args: cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		configPath := args[0]
+
+		importedConfig, err := config.LoadClaudeDesktopConfig(configPath)
+		if err != nil {
+			return fmt.Errorf("failed to import config: %w", err)
+		}
+
+		cm, err := config.NewConfigManager()
+		if err != nil {
+			return fmt.Errorf("failed to load config manager: %w", err)
+		}
+
+		importedCount := 0
+		for name, server := range importedConfig.Servers {
+			if cm.ServerExists(name) {
+				fmt.Printf("⚠️  Server '%s' already exists, skipping\n", name)
+				continue
+			}
+			if err := cm.AddServer(name, server); err != nil {
+				return fmt.Errorf("failed to add server '%s': %w", name, err)
+			}
+			fmt.Printf("✓ Imported server: %s (%s)\n", name, server.Transport)
+			importedCount++
+		}
+
+		fmt.Printf("\n✅ Successfully imported %d server(s)\n", importedCount)
+		return nil
+	},
 }
 
 var toolsCmd = &cobra.Command{
@@ -218,6 +263,7 @@ var toolsCmd = &cobra.Command{
 		case "sse":
 			sseConfig := &client.SSEConfig{
 				Endpoint: serverConfig.URL,
+				Headers:  serverConfig.Headers,
 			}
 			if err := cli.ConnectSSE(ctx, sseConfig); err != nil {
 				return fmt.Errorf("failed to connect: %w", err)
@@ -227,8 +273,9 @@ var toolsCmd = &cobra.Command{
 			httpConfig := &client.HTTPConfig{
 				Endpoint:   serverConfig.URL,
 				MaxRetries: serverConfig.MaxRetries,
+				Headers:    serverConfig.Headers,
 			}
-			if err := cli.ConnectHTTP(ctx, httpConfig); err != nil {
+			if err = cli.ConnectHTTP(ctx, httpConfig); err != nil {
 				return fmt.Errorf("failed to connect: %w", err)
 			}
 
@@ -269,8 +316,7 @@ func init() {
 }
 
 var (
-	callToolName string
-	callArgs     []string
+	callArgs []string
 )
 
 var callCmd = &cobra.Command{
@@ -411,6 +457,7 @@ var (
 	execToolArgs []string
 	execRetries  int
 	execList     bool
+	execHeaders  []string
 )
 
 var execCmd = &cobra.Command{
@@ -481,6 +528,7 @@ Examples:
 			}
 			sseConfig := &client.SSEConfig{
 				Endpoint: execURL,
+				Headers:  parseHeaders(execHeaders),
 			}
 			err = cli.ConnectSSE(ctx, sseConfig)
 
@@ -491,6 +539,7 @@ Examples:
 			httpConfig := &client.HTTPConfig{
 				Endpoint:   execURL,
 				MaxRetries: execRetries,
+				Headers:    parseHeaders(execHeaders),
 			}
 			err = cli.ConnectHTTP(ctx, httpConfig)
 
@@ -568,6 +617,7 @@ func init() {
 	execCmd.Flags().StringVar(&execURL, "url", "", "URL for SSE/HTTP transport")
 	execCmd.Flags().StringArrayVar(&execArgs, "args", nil, "Arguments for command (stdio transport)")
 	execCmd.Flags().StringArrayVarP(&execToolArgs, "arg", "a", nil, "Tool arguments (key=value)")
+	execCmd.Flags().StringArrayVar(&execHeaders, "header", nil, "Headers for HTTP requests")
 	execCmd.Flags().IntVar(&execRetries, "retries", 3, "Max retries for HTTP transport")
 	execCmd.Flags().BoolVar(&execList, "list", false, "List available tools without calling a specific tool")
 	rootCmd.AddCommand(execCmd)
